@@ -20,6 +20,12 @@ import re
 import sys
 from pathlib import Path
 
+# Windows runner（Python 3.12 及以下）默认 stdout 编码为 cp1252，
+# 输出中文会 UnicodeEncodeError；强制 UTF-8 保证 CI 与本地一致。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 AUTO_LINK_RE = re.compile(r"<([^<>]+)>")
