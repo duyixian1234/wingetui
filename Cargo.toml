@@ -26,7 +26,6 @@ repository.workspace = true
 description = "管理 winget 的 TUI 工具（Rust + ratatui + crossterm + tokio）"
 
 [dependencies]
-anyhow = { workspace = true }
 crossterm = { workspace = true }
 ratatui = { workspace = true }
 tokio = { workspace = true }

@@ -31,13 +31,20 @@ fn arg_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
+/// 查询类命令必须携带的固定 flags（与 specs §4.3 一致）。
+fn has_query_flags(args: &[String]) -> bool {
+    args.contains(&"--output".to_string())
+        && args.contains(&"json".to_string())
+        && args.contains(&"--disable-interactivity".to_string())
+        && args.contains(&"--accept-source-agreements".to_string())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    // 记录 argv 供测试断言（可选）
-    if let Ok(log) = env::var("MOCK_WINGET_LOG") {
-        let _ = std::fs::write(&log, args.join("\n"));
-    }
+    // 将完整 argv 以 stderr 前缀行输出（变更类会经 log_sink 进入日志区），
+    // 供测试断言命令构造无 shell 拼接；参数以 \u{1f} 分隔。
+    eprintln!("MOCK_ARGV:{}", args.join("\u{1f}"));
 
     let Some(sub) = args.first().map(String::as_str) else {
         eprintln!("mock-winget: missing subcommand");
@@ -46,6 +53,10 @@ fn main() -> ExitCode {
 
     match sub {
         "search" => {
+            if !has_query_flags(&args) {
+                eprintln!("mock-winget: missing query flags for search");
+                return ExitCode::from(3);
+            }
             let query = arg_after(&args, "--query").unwrap_or("");
             match query {
                 "__error__" => {
@@ -69,6 +80,10 @@ fn main() -> ExitCode {
         "upgrade" => {
             let has_id = args.iter().any(|a| a == "--id");
             let has_all = args.iter().any(|a| a == "--all");
+            if !has_id && !has_all && !has_query_flags(&args) {
+                eprintln!("mock-winget: missing query flags for upgrade list");
+                return ExitCode::from(3);
+            }
             if has_id {
                 let id = arg_after(&args, "--id").unwrap_or("");
                 if id == "__error__" {
@@ -113,6 +128,10 @@ fn main() -> ExitCode {
             }
         }
         "list" => {
+            if !has_query_flags(&args) {
+                eprintln!("mock-winget: missing query flags for list");
+                return ExitCode::from(3);
+            }
             println!("{FIXTURE_INSTALLED}");
             ExitCode::SUCCESS
         }

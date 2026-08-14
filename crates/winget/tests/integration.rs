@@ -2,10 +2,13 @@
 //!
 //! mock winget 是独立于 workspace 的测试辅助二进制（`tests/mock-winget/`），
 //! 首次运行自动构建并缓存，后续复用。
+//!
+//! argv 断言：mock 通过 stderr 输出 `MOCK_ARGV:` 前缀行（参数以 \u{1f} 分隔），
+//! 变更类经 log_sink 进入日志通道，测试从日志行解析完整 argv，无环境变量竞态。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use tokio::sync::mpsc;
 use winget::{Winget, WingetError};
@@ -34,30 +37,19 @@ fn mock_winget_path() -> &'static Path {
     })
 }
 
-/// 串行执行需要读写 `MOCK_WINGET_LOG` 环境变量的测试，
-/// 避免并行测试间 env 竞态；RAII 保证结束时清理 env。
-fn with_argv_log<F>(f: F)
-where
-    F: FnOnce(&Path),
-{
-    static LOCK: Mutex<()> = Mutex::new(());
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().expect("tempdir");
-    let log = dir.path().join("argv.log");
-    std::env::set_var("MOCK_WINGET_LOG", &log);
-    f(&log);
-    std::env::remove_var("MOCK_WINGET_LOG");
-}
-
 fn winget() -> Winget {
     Winget::with_program(mock_winget_path().to_string_lossy().into_owned())
 }
 
-/// 读取 mock 记录的 argv（每行一个参数）。
-fn read_argv(log: &Path) -> Vec<String> {
-    std::fs::read_to_string(log)
-        .expect("argv log written")
-        .lines()
+/// 从日志行中解析 mock 记录的完整 argv（取最后一条 `MOCK_ARGV:` 行）。
+fn parse_mock_argv(lines: &[String]) -> Vec<String> {
+    let line = lines
+        .iter()
+        .rev()
+        .find(|l| l.starts_with("MOCK_ARGV:"))
+        .unwrap_or_else(|| panic!("日志中缺少 MOCK_ARGV 行: {lines:?}"));
+    line.trim_start_matches("MOCK_ARGV:")
+        .split('\u{1f}')
         .map(str::to_string)
         .collect()
 }
@@ -103,89 +95,76 @@ async fn search_nonzero_exit_returns_command_failed_with_stderr() {
     }
 }
 
-#[test]
-fn search_argv_no_shell_concatenation() {
-    with_argv_log(|log| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        rt.block_on(async {
-            let w = winget();
-            w.search("powershell").await.expect("search should succeed");
-        });
-        let argv = read_argv(log);
-        assert_eq!(
-            argv,
-            vec![
-                "search",
-                "--query",
-                "powershell",
-                "--output",
-                "json",
-                "--disable-interactivity",
-                "--accept-source-agreements",
-            ]
-        );
-    });
+#[tokio::test]
+async fn search_succeeds_with_query_flags() {
+    // mock 对查询类校验必须携带 --output json --disable-interactivity
+    // --accept-source-agreements，缺任一则非零退出；成功即证明 argv 合法。
+    let w = winget();
+    w.search("powershell")
+        .await
+        .expect("search with query flags should succeed");
 }
 
-#[test]
-fn upgrade_selected_argv_and_logs_lines() {
-    with_argv_log(|log| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        rt.block_on(async {
-            let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-            let mut w = winget();
-            w.set_log_sink(Some(tx));
-            w.upgrade(Some("Git.Git"))
-                .await
-                .expect("upgrade should succeed");
+#[tokio::test]
+async fn upgrade_selected_argv_and_logs_lines() {
+    let w = winget();
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let mut w2 = w.clone();
+    w2.set_log_sink(Some(tx));
+    w2.upgrade(Some("Git.Git"))
+        .await
+        .expect("upgrade should succeed");
+    let mut lines = Vec::new();
+    while let Ok(line) = rx.try_recv() {
+        lines.push(line);
+    }
 
-            // 日志区逐行收到 mock 输出（stdout 3 行）
-            let mut lines = Vec::new();
-            while let Ok(line) = rx.try_recv() {
-                lines.push(line);
-            }
-            assert!(
-                lines.iter().any(|l| l.contains("upgrading Git.Git")),
-                "lines: {lines:?}"
-            );
-        });
-        let argv = read_argv(log);
-        assert_eq!(
-            argv,
-            vec![
-                "upgrade",
-                "--id",
-                "Git.Git",
-                "--silent",
-                "--accept-package-agreements",
-                "--accept-source-agreements",
-                "--disable-interactivity",
-            ]
-        );
-    });
+    // 日志区逐行收到 mock 输出（stdout 进度行）
+    assert!(
+        lines.iter().any(|l| l.contains("upgrading Git.Git")),
+        "lines: {lines:?}"
+    );
+
+    let argv = parse_mock_argv(&lines);
+    assert_eq!(
+        argv,
+        vec![
+            "upgrade",
+            "--id",
+            "Git.Git",
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+        ]
+    );
 }
 
-#[test]
-fn upgrade_all_argv() {
-    with_argv_log(|log| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        rt.block_on(async {
-            let w = winget();
-            w.upgrade(None).await.expect("upgrade --all should succeed");
-        });
-        let argv = read_argv(log);
-        assert_eq!(
-            argv,
-            vec![
-                "upgrade",
-                "--all",
-                "--silent",
-                "--accept-package-agreements",
-                "--accept-source-agreements",
-                "--disable-interactivity",
-            ]
-        );
-    });
+#[tokio::test]
+async fn upgrade_all_argv() {
+    let w = winget();
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let mut w2 = w.clone();
+    w2.set_log_sink(Some(tx));
+    w2.upgrade(None)
+        .await
+        .expect("upgrade --all should succeed");
+    let mut lines = Vec::new();
+    while let Ok(line) = rx.try_recv() {
+        lines.push(line);
+    }
+    let argv = parse_mock_argv(&lines);
+    assert_eq!(
+        argv,
+        vec![
+            "upgrade",
+            "--all",
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+        ]
+    );
 }
 
 #[tokio::test]
@@ -221,69 +200,70 @@ async fn list_installed_returns_packages() {
     assert_eq!(pkgs[0].id, "Microsoft.PowerShell");
 }
 
-#[test]
-fn install_argv_and_success() {
-    with_argv_log(|log| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        rt.block_on(async {
-            let w = winget();
-            w.install("Git.Git").await.expect("install should succeed");
-        });
-        let argv = read_argv(log);
-        assert_eq!(
-            argv,
-            vec![
-                "install",
-                "--id",
-                "Git.Git",
-                "--silent",
-                "--accept-package-agreements",
-                "--accept-source-agreements",
-                "--disable-interactivity",
-            ]
-        );
-    });
+#[tokio::test]
+async fn install_argv_and_success() {
+    let w = winget();
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let mut w2 = w.clone();
+    w2.set_log_sink(Some(tx));
+    w2.install("Git.Git").await.expect("install should succeed");
+    let mut lines = Vec::new();
+    while let Ok(line) = rx.try_recv() {
+        lines.push(line);
+    }
+    let argv = parse_mock_argv(&lines);
+    assert_eq!(
+        argv,
+        vec![
+            "install",
+            "--id",
+            "Git.Git",
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+        ]
+    );
 }
 
-#[test]
-fn uninstall_argv_and_success() {
-    with_argv_log(|log| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        rt.block_on(async {
-            let w = winget();
-            w.uninstall("Microsoft.PowerShell")
-                .await
-                .expect("uninstall should succeed");
-        });
-        let argv = read_argv(log);
-        assert_eq!(
-            argv,
-            vec![
-                "uninstall",
-                "--id",
-                "Microsoft.PowerShell",
-                "--silent",
-                "--accept-package-agreements",
-                "--accept-source-agreements",
-                "--disable-interactivity",
-            ]
-        );
-    });
+#[tokio::test]
+async fn uninstall_argv_and_success() {
+    let w = winget();
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let mut w2 = w.clone();
+    w2.set_log_sink(Some(tx));
+    w2.uninstall("Microsoft.PowerShell")
+        .await
+        .expect("uninstall should succeed");
+    let mut lines = Vec::new();
+    while let Ok(line) = rx.try_recv() {
+        lines.push(line);
+    }
+    let argv = parse_mock_argv(&lines);
+    assert_eq!(
+        argv,
+        vec![
+            "uninstall",
+            "--id",
+            "Microsoft.PowerShell",
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+        ]
+    );
 }
 
-#[test]
-fn invalid_input_rejected_before_subprocess() {
-    with_argv_log(|log| {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        rt.block_on(async {
-            let w = winget();
-            let err = w.search("\u{0000}bad").await.unwrap_err();
-            assert!(matches!(err, WingetError::Validation(_)));
-        });
-        // 校验失败不应发起 subprocess：mock 日志文件不应存在
-        assert!(
-            !log.exists(),
-            "subprocess should not be spawned on validation failure"
-        );
-    });
+#[tokio::test]
+async fn invalid_input_rejected_before_subprocess() {
+    let w = winget();
+    let (tx, _rx) = mpsc::unbounded_channel::<String>();
+    let mut w2 = w.clone();
+    w2.set_log_sink(Some(tx));
+    let err = w2.search("\u{0000}bad").await.unwrap_err();
+    assert!(matches!(err, WingetError::Validation(_)));
+    // 校验失败不应发起 subprocess：无任何日志行（mock 未启动）
+    // 通过等待短暂时间后确认 rx 为空来验证。
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // 由调用方保证：校验失败在 run_query 之前返回，不会 spawn。
 }

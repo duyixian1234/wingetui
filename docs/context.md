@@ -61,16 +61,18 @@
 5. `python scripts/check-links.py` exit 0
 6. CI（GitHub Actions）在 `main` 上全绿
 
-## 6. 关键外部依赖（需确认）
+## 6. 关键外部依赖（已定稿）
 
 | 依赖 | 用途 | 状态 |
 |------|------|------|
-| `ratatui` | TUI 框架 | 需定版本（当前主流 ~0.29） |
-| `crossterm` | 终端事件 | 需定版本 |
-| `tokio` | 异步运行时 | 需定版本 |
-| `serde` / `serde_json` | winget JSON 解析 | 需定版本 |
-| `anyhow` | 错误处理 | 需定版本 |
-| `fuzzy-matcher` | 搜索过滤（可选） | 需评估 |
+| `ratatui` | TUI 框架 | 已定 0.29（workspace 根） |
+| `crossterm` | 终端事件 | 已定 0.28（workspace 根） |
+| `tokio` | 异步运行时 | 已定 1.x，特性 rt-multi-thread/process/sync/macros/time/io-util |
+| `serde` / `serde_json` | winget JSON 解析（crates/winget） | 已定 1.x |
+| `thiserror` | 错误类型派生（crates/winget） | 已定 2.x |
+| `anyhow` | 错误处理（workspace 保留声明，暂未直接引用） | 预留 |
+| `tempfile` | 测试临时目录（dev） | 已定 3.x |
+| `fuzzy-matcher` | 搜索过滤（可选） | MVP 不做（见 specs/mvp.md §2 非目标） |
 
 ## 7. 参考
 
