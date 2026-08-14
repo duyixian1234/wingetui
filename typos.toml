@@ -1,0 +1,12 @@
+# typos 配置（拼写检查）
+[default]
+# 忽略 Cargo.lock（第三方依赖名非本项目可控）
+extend-ignore-re = ["^Cargo\\.lock$"]
+
+# 项目技术栈专有名词，非拼写错误（key=正确拼写）
+[default.extend-words]
+ratatui = "ratatui"
+crossterm = "crossterm"
+winget = "winget"
+wingetui = "wingetui"
+gitui = "gitui"

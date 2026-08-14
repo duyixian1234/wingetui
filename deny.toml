@@ -1,0 +1,21 @@
+# cargo-deny 配置（依赖审计）
+[advisories]
+yanked = "deny"
+ignore = [
+    # ratatui 0.29 直接依赖 paste（RUSTSEC-2024-0436 unmaintained）。
+    # 上游无安全升级（No safe upgrade available），MVP 阶段记录并忽略，
+    # 待 ratatui 升级移除该依赖后解除。
+    "RUSTSEC-2024-0436",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Zlib",
+]
