@@ -1,5 +1,4 @@
-# 构建产物
 /target
 
-# 本地临时文件
-*.log
+# 测试辅助二进制构建产物
+/tests/mock-winget/target

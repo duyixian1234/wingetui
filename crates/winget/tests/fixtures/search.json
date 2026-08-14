@@ -1,0 +1,30 @@
+{
+  "Source": "winget",
+  "TotalMatches": 3,
+  "Matches": [
+    {
+      "Package": {
+        "Id": "Microsoft.PowerShell",
+        "Name": "PowerShell",
+        "Version": "7.4.5",
+        "Source": "winget"
+      }
+    },
+    {
+      "Package": {
+        "Id": "Git.Git",
+        "Name": "Git",
+        "Version": "2.45.1",
+        "Source": "winget"
+      }
+    },
+    {
+      "Package": {
+        "Id": "Microsoft.VisualStudioCode",
+        "Name": "Visual Studio Code",
+        "Version": "1.90.2",
+        "Source": "winget"
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+[package]
+name = "mock-winget"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# 独立于 workspace 的测试辅助二进制：模拟 winget CLI 行为，
+# 按子命令返回脱敏 fixture，支持故障注入（__error__ / __notfound__ / __malformed__）。
+
+# 声明独立 workspace，避免被根 workspace 误纳入成员
+[workspace]
+
+[[bin]]
+name = "mock-winget"
+path = "src/main.rs"
