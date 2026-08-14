@@ -339,3 +339,199 @@ async fn upgrade_esc_returns_to_main_menu() {
     app.update(key(KeyCode::Esc));
     assert_eq!(app.state, AppState::MainMenu);
 }
+
+// ---------------------------------------------------------------------------
+// 安装流程
+// ---------------------------------------------------------------------------
+
+fn install_app() -> (App, UnboundedReceiver<BackgroundEvent>) {
+    let w = Winget::with_program(mock_winget_path().to_string_lossy().into_owned());
+    let (mut app, rx) = App::new(w);
+    app.update(key(KeyCode::Char('i')));
+    (app, rx)
+}
+
+#[test]
+fn install_valid_id_confirm_then_runs_and_shows_log() {
+    with_argv_log(|log| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let (mut app, mut rx) = install_app();
+            // 输入 Git.Git
+            for c in ['G', 'i', 't', '.', 'G', 'i', 't'] {
+                app.update(key(KeyCode::Char(c)));
+            }
+            // 首次 Enter：确认态（不执行）
+            app.update(key(KeyCode::Enter));
+            match &app.state {
+                AppState::Install(s) => {
+                    assert_eq!(
+                        s.pending_confirm.as_deref(),
+                        Some("Git.Git"),
+                        "应进入确认态"
+                    );
+                    assert!(!s.is_busy(), "确认态不应开始执行");
+                }
+                other => panic!("expected Install, got {other:?}"),
+            }
+            // 再次 Enter：执行安装
+            app.update(key(KeyCode::Enter));
+            match &app.state {
+                AppState::Log(_) => {}
+                other => panic!("安装中应切日志屏, got {other:?}"),
+            }
+            // 等待 ActionDone（忽略中间日志行）
+            loop {
+                let ev = next_bg(&mut rx).await;
+                if matches!(ev, BackgroundEvent::ActionDone(_)) {
+                    app.update(Event::Background(ev));
+                    break;
+                }
+                app.update(Event::Background(ev));
+            }
+            match &app.state {
+                AppState::Log(s) => {
+                    assert!(s.done);
+                    assert_eq!(s.result.as_deref(), Some("操作成功"));
+                    assert!(s.lines.iter().any(|l| l.contains("installing Git.Git")));
+                }
+                other => panic!("expected Log, got {other:?}"),
+            }
+        });
+        let argv = read_argv(log);
+        assert_eq!(
+            argv,
+            vec![
+                "install",
+                "--id",
+                "Git.Git",
+                "--silent",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "--disable-interactivity",
+            ]
+        );
+    });
+}
+
+#[tokio::test]
+async fn install_invalid_input_shows_error_and_no_subprocess() {
+    let (mut app, mut rx) = install_app();
+    for _ in 0..201 {
+        app.update(key(KeyCode::Char('a')));
+    }
+    app.update(key(KeyCode::Enter));
+
+    match &app.state {
+        AppState::Install(s) => {
+            assert!(s.error.is_some(), "超长输入应报错");
+            assert_eq!(s.pending_confirm, None, "不应进入确认态");
+        }
+        other => panic!("expected Install, got {other:?}"),
+    }
+    let timed_out = tokio::time::timeout(Duration::from_millis(400), rx.recv()).await;
+    assert!(timed_out.is_err(), "非法输入不应发起 subprocess");
+}
+
+#[tokio::test]
+async fn install_empty_input_shows_error() {
+    let (mut app, _rx) = install_app();
+    app.update(key(KeyCode::Enter));
+    match &app.state {
+        AppState::Install(s) => {
+            assert!(s.error.is_some(), "空输入应报错");
+        }
+        other => panic!("expected Install, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 卸载流程
+// ---------------------------------------------------------------------------
+
+fn uninstall_app() -> (App, UnboundedReceiver<BackgroundEvent>) {
+    let w = Winget::with_program(mock_winget_path().to_string_lossy().into_owned());
+    let (mut app, rx) = App::new(w);
+    app.update(key(KeyCode::Char('x')));
+    (app, rx)
+}
+
+#[tokio::test]
+async fn uninstall_screen_auto_loads_installed_list() {
+    let (mut app, mut rx) = uninstall_app();
+    match &app.state {
+        AppState::Uninstall(s) => assert!(s.loading, "进入卸载屏应处于加载态"),
+        other => panic!("expected Uninstall, got {other:?}"),
+    }
+    let ev = next_bg(&mut rx).await;
+    app.update(Event::Background(ev));
+    match &app.state {
+        AppState::Uninstall(s) => {
+            assert!(!s.loading);
+            assert_eq!(s.items.len(), 2);
+            assert_eq!(s.items[0].id, "Microsoft.PowerShell");
+        }
+        other => panic!("expected Uninstall, got {other:?}"),
+    }
+}
+
+#[test]
+fn uninstall_selected_sends_id_and_shows_log() {
+    with_argv_log(|log| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let (mut app, mut rx) = uninstall_app();
+            let ev = next_bg(&mut rx).await;
+            app.update(Event::Background(ev));
+
+            // 默认选中第一项 Microsoft.PowerShell，Enter 卸载
+            app.update(key(KeyCode::Enter));
+            match &app.state {
+                AppState::Log(_) => {}
+                other => panic!("卸载中应切日志屏, got {other:?}"),
+            }
+            let mut saw_line = false;
+            loop {
+                let ev = next_bg(&mut rx).await;
+                if matches!(ev, BackgroundEvent::ActionDone(_)) {
+                    app.update(Event::Background(ev));
+                    break;
+                }
+                if let BackgroundEvent::LogLine(l) = &ev {
+                    if l.contains("uninstalling Microsoft.PowerShell") {
+                        saw_line = true;
+                    }
+                }
+                app.update(Event::Background(ev));
+            }
+            assert!(saw_line, "应收到卸载实时日志行");
+            match &app.state {
+                AppState::Log(s) => {
+                    assert!(s.done);
+                    assert_eq!(s.result.as_deref(), Some("操作成功"));
+                }
+                other => panic!("expected Log, got {other:?}"),
+            }
+        });
+        let argv = read_argv(log);
+        assert_eq!(
+            argv,
+            vec![
+                "uninstall",
+                "--id",
+                "Microsoft.PowerShell",
+                "--silent",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "--disable-interactivity",
+            ]
+        );
+    });
+}
+
+#[tokio::test]
+async fn uninstall_esc_returns_to_main_menu() {
+    let (mut app, _rx) = uninstall_app();
+    app.update(key(KeyCode::Esc));
+    assert_eq!(app.state, AppState::MainMenu);
+}

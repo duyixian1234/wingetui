@@ -11,7 +11,7 @@ use winget::{Package, WingetError};
 pub use install::InstallState;
 pub use log::LogState;
 pub use search::SearchState;
-pub use uninstall::UninstallState;
+pub use uninstall::{UninstallAction, UninstallState};
 pub use upgrade::{UpgradeAction, UpgradeState};
 
 /// 应用顶层状态。

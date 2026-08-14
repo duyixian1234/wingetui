@@ -16,8 +16,8 @@ use winget::Winget;
 
 use crate::event::{Event, EventLoop};
 use crate::state::{
-    AppState, BackgroundEvent, InstallState, LogState, SearchState, UninstallState, UpgradeAction,
-    UpgradeState,
+    AppState, BackgroundEvent, InstallState, LogState, SearchState, UninstallAction,
+    UninstallState, UpgradeAction, UpgradeState,
 };
 
 /// 搜索输入防抖时长。
@@ -105,7 +105,10 @@ impl App {
                 self.trigger_upgrade_list();
             }
             KeyCode::Char('i') => self.state = AppState::Install(InstallState::new()),
-            KeyCode::Char('x') => self.state = AppState::Uninstall(UninstallState::new()),
+            KeyCode::Char('x') => {
+                self.state = AppState::Uninstall(UninstallState::new());
+                self.trigger_installed_list();
+            }
             KeyCode::Char('q') => {
                 self.should_quit = true;
             }
@@ -266,13 +269,132 @@ impl App {
     fn handle_install(&mut self, code: KeyCode) {
         if code == KeyCode::Esc {
             self.state = AppState::MainMenu;
+            return;
+        }
+        match code {
+            KeyCode::Char(c) => {
+                if let AppState::Install(s) = &mut self.state {
+                    if s.is_busy() {
+                        return;
+                    }
+                    // 确认态下按 y 确认执行
+                    if c == 'y' && s.pending_confirm.is_some() {
+                        self.confirm_install();
+                        return;
+                    }
+                    s.input.push(c);
+                    s.error = None;
+                    s.pending_confirm = None;
+                }
+            }
+            KeyCode::Backspace => {
+                if let AppState::Install(s) = &mut self.state {
+                    if !s.is_busy() {
+                        s.input.pop();
+                        s.error = None;
+                        s.pending_confirm = None;
+                    }
+                }
+            }
+            KeyCode::Enter => self.confirm_install(),
+            _ => {}
+        }
+    }
+
+    /// 安装确认：首次 Enter 校验并进入确认态；确认态再次 Enter/y 执行安装。
+    fn confirm_install(&mut self) {
+        let AppState::Install(s) = &mut self.state else {
+            return;
+        };
+        if s.is_busy() {
+            return;
+        }
+        let input = s.input.trim().to_string();
+        if input.is_empty() {
+            s.error = Some("请输入包 Id".to_string());
+            return;
+        }
+        if let Err(e) = validate_package_input(&input) {
+            s.error = Some(e.to_string());
+            return;
+        }
+        if s.pending_confirm.as_deref() == Some(input.as_str()) {
+            // 已确认：执行安装
+            let winget = self.winget.clone();
+            let tx = self.background_tx.clone();
+            self.state = AppState::Log(LogState::new());
+            tokio::spawn(async move {
+                let result = winget.install(&input).await;
+                let _ = tx.send(BackgroundEvent::ActionDone(result));
+            });
+        } else {
+            // 首次 Enter：进入确认态
+            s.pending_confirm = Some(input.clone());
+            s.error = None;
         }
     }
 
     fn handle_uninstall(&mut self, code: KeyCode) {
         if code == KeyCode::Esc {
             self.state = AppState::MainMenu;
+            return;
         }
+        match code {
+            KeyCode::Enter => self.start_uninstall(),
+            KeyCode::Char('r') => self.trigger_installed_list(),
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let AppState::Uninstall(s) = &mut self.state {
+                    s.select_prev();
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let AppState::Uninstall(s) = &mut self.state {
+                    s.select_next();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 进入卸载屏时自动加载已安装列表。
+    fn trigger_installed_list(&mut self) {
+        let AppState::Uninstall(s) = &mut self.state else {
+            return;
+        };
+        s.loading = true;
+        s.message = None;
+        let winget = self.winget.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = winget.list_installed().await;
+            let _ = tx.send(BackgroundEvent::InstalledListDone(result));
+        });
+    }
+
+    /// 卸载选中项：防重复提交，执行期间切日志屏。
+    fn start_uninstall(&mut self) {
+        let id = {
+            let AppState::Uninstall(s) = &self.state else {
+                return;
+            };
+            if s.loading || s.action.is_some() || s.items.is_empty() {
+                return;
+            }
+            Some(s.items[s.selected].id.clone())
+        };
+        let Some(id) = id else {
+            return;
+        };
+        if let AppState::Uninstall(s) = &mut self.state {
+            s.action = Some(UninstallAction { index: s.selected });
+        }
+        self.state = AppState::Log(LogState::new());
+        let winget = self.winget.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = winget.uninstall(&id).await;
+            let _ = tx.send(BackgroundEvent::ActionDone(result));
+        });
     }
 
     fn handle_log(&mut self, code: KeyCode) {
@@ -401,7 +523,13 @@ mod tests {
     async fn main_menu_uninstall_key_goes_to_uninstall() {
         let mut a = app();
         a.update(key(KeyCode::Char('x')));
-        assert_eq!(a.state, AppState::Uninstall(UninstallState::new()));
+        match &a.state {
+            AppState::Uninstall(s) => {
+                // 进入卸载屏自动触发已安装列表加载
+                assert!(s.loading);
+            }
+            other => panic!("expected Uninstall, got {other:?}"),
+        }
     }
 
     #[tokio::test]
