@@ -22,6 +22,8 @@ pub use models::Package;
 /// winget 无状态门面。
 ///
 /// 默认调用 PATH 中的 `winget`；测试可经 [`Winget::with_program`] 注入 mock 二进制路径。
+/// `Clone` 供后台任务 move 门面副本进入 tokio task。
+#[derive(Clone)]
 pub struct Winget {
     program: String,
     /// 变更类命令实时 stdout/stderr 行回传通道。

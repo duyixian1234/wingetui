@@ -4,11 +4,14 @@
 //! `run` 才进入 ratatui/crossterm 主循环。
 
 use std::io;
+use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::task::AbortHandle;
+use winget::validate::validate_package_input;
 use winget::Winget;
 
 use crate::event::{Event, EventLoop};
@@ -16,12 +19,17 @@ use crate::state::{
     AppState, BackgroundEvent, InstallState, SearchState, UninstallState, UpgradeState,
 };
 
+/// 搜索输入防抖时长。
+pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
+
 /// 应用主体。
 pub struct App {
     pub state: AppState,
     pub winget: Winget,
     pub background_tx: UnboundedSender<BackgroundEvent>,
     pub should_quit: bool,
+    /// 搜索防抖任务句柄：输入变化时 abort 旧任务，避免重复/过期搜索。
+    search_debounce: Option<AbortHandle>,
 }
 
 impl App {
@@ -34,6 +42,7 @@ impl App {
                 winget,
                 background_tx: tx,
                 should_quit: false,
+                search_debounce: None,
             },
             rx,
         )
@@ -85,7 +94,70 @@ impl App {
 
     fn handle_search(&mut self, code: KeyCode) {
         if code == KeyCode::Esc || code == KeyCode::BackTab {
+            self.abort_search();
             self.state = AppState::MainMenu;
+            return;
+        }
+        let changed = match code {
+            KeyCode::Char(c) => {
+                if let AppState::Search(s) = &mut self.state {
+                    s.query.push(c);
+                    true
+                } else {
+                    false
+                }
+            }
+            KeyCode::Backspace => {
+                if let AppState::Search(s) = &mut self.state {
+                    s.query.pop();
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        if changed {
+            self.trigger_search();
+        }
+    }
+
+    /// 输入变化后触发防抖搜索：空输入/非法输入不发起 subprocess。
+    fn trigger_search(&mut self) {
+        // 取消上一次防抖任务（300ms 窗口内再次输入不重复触发）。
+        self.abort_search();
+
+        let AppState::Search(s) = &mut self.state else {
+            return;
+        };
+        s.error = None;
+        let query = s.query.trim().to_string();
+        if query.is_empty() {
+            s.results.clear();
+            s.loading = false;
+            return;
+        }
+        if let Err(e) = validate_package_input(&query) {
+            s.error = Some(e.to_string());
+            s.loading = false;
+            return;
+        }
+
+        s.loading = true;
+        let winget = self.winget.clone();
+        let tx = self.background_tx.clone();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(SEARCH_DEBOUNCE).await;
+            let result = winget.search(&query).await;
+            let _ = tx.send(BackgroundEvent::SearchDone(result));
+        });
+        self.search_debounce = Some(handle.abort_handle());
+    }
+
+    /// 中止当前搜索防抖任务。
+    fn abort_search(&mut self) {
+        if let Some(h) = self.search_debounce.take() {
+            h.abort();
         }
     }
 
