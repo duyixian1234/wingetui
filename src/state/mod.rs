@@ -12,7 +12,7 @@ pub use install::InstallState;
 pub use log::LogState;
 pub use search::SearchState;
 pub use uninstall::UninstallState;
-pub use upgrade::UpgradeState;
+pub use upgrade::{UpgradeAction, UpgradeState};
 
 /// 应用顶层状态。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

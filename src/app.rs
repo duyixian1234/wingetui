@@ -16,7 +16,8 @@ use winget::Winget;
 
 use crate::event::{Event, EventLoop};
 use crate::state::{
-    AppState, BackgroundEvent, InstallState, SearchState, UninstallState, UpgradeState,
+    AppState, BackgroundEvent, InstallState, LogState, SearchState, UninstallState, UpgradeAction,
+    UpgradeState,
 };
 
 /// 搜索输入防抖时长。
@@ -34,8 +35,26 @@ pub struct App {
 
 impl App {
     /// 创建应用，返回后台事件接收端（供事件循环合并）。
+    ///
+    /// 变更类命令的 stdout/stderr 行经 `winget.log_sink` → 转发任务 →
+    /// `BackgroundEvent::LogLine` 汇入统一后台事件通道。
     pub fn new(winget: Winget) -> (Self, UnboundedReceiver<BackgroundEvent>) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        let mut winget = winget;
+        winget.set_log_sink(Some(log_tx));
+
+        // 转发 winget 日志行 → 后台事件（LogLine）
+        let fwd_tx = tx.clone();
+        tokio::spawn(async move {
+            while let Some(line) = log_rx.recv().await {
+                if fwd_tx.send(BackgroundEvent::LogLine(line)).is_err() {
+                    break;
+                }
+            }
+        });
+
         (
             Self {
                 state: AppState::MainMenu,
@@ -79,17 +98,19 @@ impl App {
     }
 
     fn handle_main_menu(&mut self, code: KeyCode) {
-        self.state = match code {
-            KeyCode::Char('s') => AppState::Search(SearchState::new()),
-            KeyCode::Char('u') => AppState::Upgrade(UpgradeState::new()),
-            KeyCode::Char('i') => AppState::Install(InstallState::new()),
-            KeyCode::Char('x') => AppState::Uninstall(UninstallState::new()),
+        match code {
+            KeyCode::Char('s') => self.state = AppState::Search(SearchState::new()),
+            KeyCode::Char('u') => {
+                self.state = AppState::Upgrade(UpgradeState::new());
+                self.trigger_upgrade_list();
+            }
+            KeyCode::Char('i') => self.state = AppState::Install(InstallState::new()),
+            KeyCode::Char('x') => self.state = AppState::Uninstall(UninstallState::new()),
             KeyCode::Char('q') => {
                 self.should_quit = true;
-                AppState::MainMenu
             }
-            _ => AppState::MainMenu,
-        };
+            _ => {}
+        }
     }
 
     fn handle_search(&mut self, code: KeyCode) {
@@ -164,7 +185,82 @@ impl App {
     fn handle_upgrade(&mut self, code: KeyCode) {
         if code == KeyCode::Esc {
             self.state = AppState::MainMenu;
+            return;
         }
+        match code {
+            KeyCode::Char('u') => self.start_upgrade(UpgradeAction::Selected),
+            KeyCode::Char('a') => self.start_upgrade(UpgradeAction::All),
+            KeyCode::Char('r') => self.trigger_upgrade_list(),
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let AppState::Upgrade(s) = &mut self.state {
+                    s.select_prev();
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let AppState::Upgrade(s) = &mut self.state {
+                    s.select_next();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 进入升级屏时自动加载可升级列表。
+    fn trigger_upgrade_list(&mut self) {
+        let AppState::Upgrade(s) = &mut self.state else {
+            return;
+        };
+        s.loading = true;
+        s.message = None;
+        let winget = self.winget.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = winget.list_upgradeable().await;
+            let _ = tx.send(BackgroundEvent::UpgradeListDone(result));
+        });
+    }
+
+    /// 发起升级：选中项（`Selected`）或全部（`All`）。
+    ///
+    /// 升级中防重复提交：state 切到 `Log` 后不再响应 `u`/`a`；
+    /// 且 `UpgradeState.action` 被标记，直到任务结束/重新加载前不可再次触发。
+    fn start_upgrade(&mut self, action: UpgradeAction) {
+        let id = match action {
+            UpgradeAction::Selected => {
+                let AppState::Upgrade(s) = &self.state else {
+                    return;
+                };
+                // 加载中或已在操作 → 防重复提交
+                if s.loading || s.action.is_some() || s.items.is_empty() {
+                    return;
+                }
+                Some(s.items[s.selected].id.clone())
+            }
+            UpgradeAction::All => {
+                let AppState::Upgrade(s) = &self.state else {
+                    return;
+                };
+                if s.loading || s.action.is_some() {
+                    return;
+                }
+                None
+            }
+        };
+
+        // 标记进行中（防重复）
+        if let AppState::Upgrade(s) = &mut self.state {
+            s.action = Some(action);
+        }
+
+        // 切到日志屏，实时显示变更输出
+        self.state = AppState::Log(LogState::new());
+
+        let winget = self.winget.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = winget.upgrade(id.as_deref()).await;
+            let _ = tx.send(BackgroundEvent::ActionDone(result));
+        });
     }
 
     fn handle_install(&mut self, code: KeyCode) {
@@ -274,43 +370,49 @@ mod tests {
         App::new(Winget::new()).0
     }
 
-    #[test]
-    fn main_menu_search_key_goes_to_search() {
+    #[tokio::test]
+    async fn main_menu_search_key_goes_to_search() {
         let mut a = app();
         a.update(key(KeyCode::Char('s')));
         assert_eq!(a.state, AppState::Search(SearchState::new()));
     }
 
-    #[test]
-    fn main_menu_upgrade_key_goes_to_upgrade() {
+    #[tokio::test]
+    async fn main_menu_upgrade_key_goes_to_upgrade() {
         let mut a = app();
         a.update(key(KeyCode::Char('u')));
-        assert_eq!(a.state, AppState::Upgrade(UpgradeState::new()));
+        match &a.state {
+            AppState::Upgrade(s) => {
+                // 进入升级屏自动触发加载
+                assert!(s.loading);
+            }
+            other => panic!("expected Upgrade, got {other:?}"),
+        }
     }
 
-    #[test]
-    fn main_menu_install_key_goes_to_install() {
+    #[tokio::test]
+    async fn main_menu_install_key_goes_to_install() {
         let mut a = app();
         a.update(key(KeyCode::Char('i')));
         assert_eq!(a.state, AppState::Install(InstallState::new()));
     }
 
-    #[test]
-    fn main_menu_uninstall_key_goes_to_uninstall() {
+    #[tokio::test]
+    async fn main_menu_uninstall_key_goes_to_uninstall() {
         let mut a = app();
         a.update(key(KeyCode::Char('x')));
         assert_eq!(a.state, AppState::Uninstall(UninstallState::new()));
     }
 
-    #[test]
-    fn main_menu_q_quits() {
+    #[tokio::test]
+    async fn main_menu_q_quits() {
         let mut a = app();
         a.update(key(KeyCode::Char('q')));
         assert!(a.should_quit);
     }
 
-    #[test]
-    fn ctrl_c_quits_from_any_state() {
+    #[tokio::test]
+    async fn ctrl_c_quits_from_any_state() {
         let mut a = app();
         a.update(key(KeyCode::Char('s')));
         assert_eq!(a.state, AppState::Search(SearchState::new()));
@@ -318,55 +420,55 @@ mod tests {
         assert!(a.should_quit);
     }
 
-    #[test]
-    fn unknown_main_menu_key_stays() {
+    #[tokio::test]
+    async fn unknown_main_menu_key_stays() {
         let mut a = app();
         a.update(key(KeyCode::Char('z')));
         assert_eq!(a.state, AppState::MainMenu);
     }
 
-    #[test]
-    fn esc_from_search_returns_to_main_menu() {
+    #[tokio::test]
+    async fn esc_from_search_returns_to_main_menu() {
         let mut a = app();
         a.update(key(KeyCode::Char('s')));
         a.update(key(KeyCode::Esc));
         assert_eq!(a.state, AppState::MainMenu);
     }
 
-    #[test]
-    fn esc_from_upgrade_returns_to_main_menu() {
+    #[tokio::test]
+    async fn esc_from_upgrade_returns_to_main_menu() {
         let mut a = app();
         a.update(key(KeyCode::Char('u')));
         a.update(key(KeyCode::Esc));
         assert_eq!(a.state, AppState::MainMenu);
     }
 
-    #[test]
-    fn esc_from_install_returns_to_main_menu() {
+    #[tokio::test]
+    async fn esc_from_install_returns_to_main_menu() {
         let mut a = app();
         a.update(key(KeyCode::Char('i')));
         a.update(key(KeyCode::Esc));
         assert_eq!(a.state, AppState::MainMenu);
     }
 
-    #[test]
-    fn esc_from_uninstall_returns_to_main_menu() {
+    #[tokio::test]
+    async fn esc_from_uninstall_returns_to_main_menu() {
         let mut a = app();
         a.update(key(KeyCode::Char('x')));
         a.update(key(KeyCode::Esc));
         assert_eq!(a.state, AppState::MainMenu);
     }
 
-    #[test]
-    fn esc_from_log_returns_to_main_menu() {
+    #[tokio::test]
+    async fn esc_from_log_returns_to_main_menu() {
         let mut a = app();
         a.state = AppState::Log(LogState::new());
         a.update(key(KeyCode::Esc));
         assert_eq!(a.state, AppState::MainMenu);
     }
 
-    #[test]
-    fn resize_event_does_not_crash_or_change_state() {
+    #[tokio::test]
+    async fn resize_event_does_not_crash_or_change_state() {
         let mut a = app();
         a.update(key(KeyCode::Char('s')));
         a.update(Event::Resize(100, 40));
@@ -374,8 +476,8 @@ mod tests {
         assert!(!a.should_quit);
     }
 
-    #[test]
-    fn background_search_done_updates_results() {
+    #[tokio::test]
+    async fn background_search_done_updates_results() {
         let mut a = app();
         a.update(key(KeyCode::Char('s')));
         let pkg = Package {
@@ -398,8 +500,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn background_log_line_appends_to_log_state() {
+    #[tokio::test]
+    async fn background_log_line_appends_to_log_state() {
         let mut a = app();
         a.state = AppState::Log(LogState::new());
         a.update(Event::Background(BackgroundEvent::LogLine(
@@ -413,8 +515,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn background_action_done_marks_log_finished() {
+    #[tokio::test]
+    async fn background_action_done_marks_log_finished() {
         let mut a = app();
         a.state = AppState::Log(LogState::new());
         a.update(Event::Background(BackgroundEvent::ActionDone(Ok(()))));

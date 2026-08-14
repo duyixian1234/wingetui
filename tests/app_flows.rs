@@ -1,10 +1,10 @@
-//! 应用流程集成测试：经 mock winget 验证搜索流程端到端行为。
+//! 应用流程集成测试：经 mock winget 验证搜索/升级/安装/卸载流程端到端行为。
 //!
 //! 状态机纯逻辑（无终端）由事件驱动；mock winget 见 `tests/mock-winget/`。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -47,6 +47,29 @@ fn search_app() -> (App, UnboundedReceiver<BackgroundEvent>) {
     let (mut app, rx) = App::new(w);
     app.update(key(KeyCode::Char('s')));
     (app, rx)
+}
+
+/// 串行执行需要读写 `MOCK_WINGET_LOG` 环境变量的测试（argv 断言），
+/// 避免并行测试间 env 竞态；RAII 保证结束时清理 env。
+fn with_argv_log<F>(f: F)
+where
+    F: FnOnce(&Path),
+{
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = dir.path().join("argv.log");
+    std::env::set_var("MOCK_WINGET_LOG", &log);
+    f(&log);
+    std::env::remove_var("MOCK_WINGET_LOG");
+}
+
+fn read_argv(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log)
+        .expect("argv log written")
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 /// 等待下一个后台事件（带超时，防挂死）。
@@ -176,4 +199,143 @@ async fn search_esc_returns_to_main_menu_and_aborts_pending() {
     // 离开搜索屏后 pending 任务被 abort，不应有事件到达
     let timed_out = tokio::time::timeout(Duration::from_millis(400), rx.recv()).await;
     assert!(timed_out.is_err(), "Esc 返回后不应再有搜索事件");
+}
+
+// ---------------------------------------------------------------------------
+// 升级流程
+// ---------------------------------------------------------------------------
+
+fn upgrade_app() -> (App, UnboundedReceiver<BackgroundEvent>) {
+    let w = Winget::with_program(mock_winget_path().to_string_lossy().into_owned());
+    let (mut app, rx) = App::new(w);
+    app.update(key(KeyCode::Char('u')));
+    (app, rx)
+}
+
+#[tokio::test]
+async fn upgrade_screen_auto_loads_upgradeable_list() {
+    let (mut app, mut rx) = upgrade_app();
+
+    match &app.state {
+        AppState::Upgrade(s) => assert!(s.loading, "进入升级屏应处于加载态"),
+        other => panic!("expected Upgrade, got {other:?}"),
+    }
+
+    let ev = next_bg(&mut rx).await;
+    app.update(Event::Background(ev));
+
+    match &app.state {
+        AppState::Upgrade(s) => {
+            assert!(!s.loading);
+            assert_eq!(s.items.len(), 2);
+            assert_eq!(s.items[0].id, "Git.Git");
+            assert_eq!(s.items[0].available_version.as_deref(), Some("2.46.0"));
+        }
+        other => panic!("expected Upgrade, got {other:?}"),
+    }
+}
+
+#[test]
+fn upgrade_selected_sends_id_and_shows_log_then_result() {
+    with_argv_log(|log| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let (mut app, mut rx) = upgrade_app();
+            // 等待列表加载
+            let ev = next_bg(&mut rx).await;
+            app.update(Event::Background(ev));
+
+            // 默认选中第一项 Git.Git，按 u 升级选中
+            app.update(key(KeyCode::Char('u')));
+            match app.state {
+                AppState::Log(_) => {}
+                other => panic!("升级中应切日志屏, got {other:?}"),
+            }
+
+            // 先收到日志行（mock 输出 3 行 stdout）
+            let mut saw_line = false;
+            for _ in 0..3 {
+                let ev = next_bg(&mut rx).await;
+                if let BackgroundEvent::LogLine(line) = &ev {
+                    if line.contains("upgrading Git.Git") {
+                        saw_line = true;
+                    }
+                }
+                app.update(Event::Background(ev));
+            }
+            assert!(saw_line, "应收到升级实时日志行");
+
+            // 再收到 ActionDone
+            let ev = next_bg(&mut rx).await;
+            app.update(Event::Background(ev));
+            match app.state {
+                AppState::Log(s) => {
+                    assert!(s.done);
+                    assert_eq!(s.result.as_deref(), Some("操作成功"));
+                    assert!(s.lines.iter().any(|l| l.contains("upgrading Git.Git")));
+                }
+                other => panic!("expected Log, got {other:?}"),
+            }
+        });
+        let argv = read_argv(log);
+        assert_eq!(
+            argv,
+            vec![
+                "upgrade",
+                "--id",
+                "Git.Git",
+                "--silent",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "--disable-interactivity",
+            ]
+        );
+    });
+}
+
+#[test]
+fn upgrade_all_sends_all_flag_and_shows_result() {
+    with_argv_log(|log| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let (mut app, mut rx) = upgrade_app();
+            let ev = next_bg(&mut rx).await;
+            app.update(Event::Background(ev));
+
+            // 升级全部
+            app.update(key(KeyCode::Char('a')));
+            match app.state {
+                AppState::Log(_) => {}
+                other => panic!("expected Log, got {other:?}"),
+            }
+
+            // 逐行处理日志直到 ActionDone
+            loop {
+                let ev = next_bg(&mut rx).await;
+                if matches!(ev, BackgroundEvent::ActionDone(_)) {
+                    break;
+                }
+                app.update(Event::Background(ev));
+            }
+        });
+        let argv = read_argv(log);
+        assert_eq!(
+            argv,
+            vec![
+                "upgrade",
+                "--all",
+                "--silent",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "--disable-interactivity",
+            ]
+        );
+    });
+}
+
+#[tokio::test]
+async fn upgrade_esc_returns_to_main_menu() {
+    let (mut app, _rx) = upgrade_app();
+    app.update(key(KeyCode::Esc));
+    assert_eq!(app.state, AppState::MainMenu);
 }

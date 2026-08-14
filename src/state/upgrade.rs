@@ -5,8 +5,8 @@ use winget::Package;
 /// 当前进行的升级操作（用于防重复提交）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpgradeAction {
-    /// 升级选中项。
-    Selected(usize),
+    /// 升级选中项（index 见 [`UpgradeState::selected`]）。
+    Selected,
     /// 升级全部。
     All,
 }
