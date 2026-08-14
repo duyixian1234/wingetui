@@ -31,8 +31,8 @@ pub enum WingetError {
     #[error("IO 错误: {0}")]
     Io(String),
 
-    /// JSON 解析失败（字段缺失降级，整体失败才报）。
-    #[error("JSON 解析失败: {0}")]
+    /// 输出解析失败（字段缺失降级，整体失败才报）。
+    #[error("输出解析失败: {0}")]
     Parse(String),
 
     /// winget 命令非零退出。

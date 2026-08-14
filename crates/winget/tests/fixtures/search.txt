@@ -1,0 +1,5 @@
+名称                ID                          版本    匹配      源
+--------------------------------------------------------------------
+PowerShell          Microsoft.PowerShell        7.4.5             winget
+Git                 Git.Git                     2.45.1  Tag: git  winget
+Visual Studio Code  Microsoft.VisualStudioCode  1.90.2            winget

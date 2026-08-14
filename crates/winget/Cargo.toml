@@ -4,13 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "winget CLI 交互层：subprocess 调用 + JSON 解析"
+description = "winget CLI 交互层：subprocess 调用 + 文本表格解析"
 
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+encoding_rs = { workspace = true }
+unicode-width = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

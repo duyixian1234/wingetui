@@ -1,0 +1,4 @@
+Ãû³Æ        ID                    °æ±¾    Æ¥Åä      Ô´
+------------------------------------------------------
+PowerShell  Microsoft.PowerShell  7.4.5             winget
+Git         Git.Git               2.45.1  Tag: git  winget

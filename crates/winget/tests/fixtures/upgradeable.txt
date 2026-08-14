@@ -1,0 +1,4 @@
+名称        ID                    版本    可用    源
+----------------------------------------------------
+Git         Git.Git               2.45.1  2.46.0  winget
+PowerShell  Microsoft.PowerShell  7.4.5   7.5.0   winget

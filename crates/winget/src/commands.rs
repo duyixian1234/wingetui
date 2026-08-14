@@ -4,12 +4,11 @@
 //! 这里只构造 `Vec<String>` 参数列表，由 [`Winget`](crate::Winget) 组装成 `tokio::process::Command`。
 
 /// 查询类命令固定追加参数（防首跑源协议弹窗挂起）。
-const QUERY_FLAGS: [&str; 4] = [
-    "--output",
-    "json",
-    "--disable-interactivity",
-    "--accept-source-agreements",
-];
+///
+/// 规格契约（`specs/bugfix-query-output.md` §4.1）：winget v1.29.280 的
+/// search / list / upgrade 查询类子命令**不支持 `--output json`**（实测退出码
+/// `0x8A150002`），因此查询类只保留非交互 flags，解析文本表格输出。
+const QUERY_FLAGS: [&str; 2] = ["--disable-interactivity", "--accept-source-agreements"];
 
 /// 变更类命令固定追加参数（非交互执行）。
 const ACTION_FLAGS: [&str; 4] = [
@@ -76,7 +75,7 @@ pub fn uninstall_args(id: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// 断言查询参数与规格 §4.3 完全一致（无 shell 拼接：参数是独立数组元素）。
+    /// 断言查询参数与规格 §4.1 完全一致（无 `--output json`；无 shell 拼接：参数是独立数组元素）。
     #[test]
     fn search_argv_matches_spec() {
         assert_eq!(
@@ -85,8 +84,6 @@ mod tests {
                 "search",
                 "--query",
                 "powershell",
-                "--output",
-                "json",
                 "--disable-interactivity",
                 "--accept-source-agreements",
             ]
@@ -99,8 +96,6 @@ mod tests {
             list_upgradeable_args(),
             vec![
                 "upgrade",
-                "--output",
-                "json",
                 "--disable-interactivity",
                 "--accept-source-agreements",
             ]
@@ -113,12 +108,25 @@ mod tests {
             list_installed_args(),
             vec![
                 "list",
-                "--output",
-                "json",
                 "--disable-interactivity",
                 "--accept-source-agreements",
             ]
         );
+    }
+
+    /// 查询类三个命令均不得包含 `--output json`（真实 winget 不支持，根因回归防护）。
+    #[test]
+    fn query_argv_has_no_output_json() {
+        for args in [
+            search_args("powershell"),
+            list_upgradeable_args(),
+            list_installed_args(),
+        ] {
+            assert!(
+                !args.iter().any(|a| a == "--output" || a == "json"),
+                "查询类参数不得含 --output json: {args:?}"
+            );
+        }
     }
 
     #[test]

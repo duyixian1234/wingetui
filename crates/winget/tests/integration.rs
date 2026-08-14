@@ -63,10 +63,26 @@ async fn search_returns_fixture_packages() {
     assert_eq!(pkgs[0].name, "PowerShell");
     assert_eq!(pkgs[0].version, "7.4.5");
     assert_eq!(pkgs[0].source.as_deref(), Some("winget"));
+    // 含空格字段：名称 "Visual Studio Code" 与匹配列 "Tag: git"（匹配列被忽略）
+    assert_eq!(pkgs[2].name, "Visual Studio Code");
 }
 
 #[tokio::test]
-async fn search_malformed_json_returns_parse_error() {
+async fn search_gbk_output_decodes_and_parses() {
+    // mock __gbk__ 输出 GBK 编码的表格字节：解码回退 GBK 后应正确解析
+    let w = winget();
+    let pkgs = w
+        .search("__gbk__")
+        .await
+        .expect("gbk search should succeed");
+    assert_eq!(pkgs.len(), 2);
+    assert_eq!(pkgs[0].id, "Microsoft.PowerShell");
+    assert_eq!(pkgs[0].name, "PowerShell");
+    assert_eq!(pkgs[1].id, "Git.Git");
+}
+
+#[tokio::test]
+async fn search_malformed_text_returns_parse_error() {
     let w = winget();
     let err = w.search("__malformed__").await.unwrap_err();
     assert!(matches!(err, WingetError::Parse(_)), "got {err:?}");
@@ -97,8 +113,9 @@ async fn search_nonzero_exit_returns_command_failed_with_stderr() {
 
 #[tokio::test]
 async fn search_succeeds_with_query_flags() {
-    // mock 对查询类校验必须携带 --output json --disable-interactivity
-    // --accept-source-agreements，缺任一则非零退出；成功即证明 argv 合法。
+    // mock 对查询类校验必须携带 --disable-interactivity --accept-source-agreements
+    // 且**不得携带 --output json**（真实 winget v1.29.280 不支持）；缺任一/多带则非零退出。
+    // 成功即证明 argv 合法。
     let w = winget();
     w.search("powershell")
         .await

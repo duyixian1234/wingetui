@@ -19,7 +19,7 @@
    - **升级**：升级指定包 / 全部可升级
    - **安装**：安装指定包
    - **卸载**：卸载已安装包
-3. **winget 交互层**：subprocess 调用 winget CLI，JSON 输出解析（见 [ADR-0002](adr/0002-winget-subprocess.md)）
+3. **winget 交互层**：subprocess 调用 winget CLI，文本表格输出解析 + GBK/UTF-8 解码（见 [ADR-0002](adr/0002-winget-subprocess.md)）
 4. **异步**：tokio 运行时 + 后台任务，UI 不阻塞（见 [ADR-0001](adr/0001-tokio-async.md)）
 
 ### 2.2 非目标（MVP 明确不做）
@@ -49,7 +49,7 @@
 | 语言/工具链 | Rust（MSRV 遵循 ratatui 要求），cargo 构建 |
 | 依赖管理 | cargo，禁止全局安装混用 |
 | 仓库形态 | GitHub 公开仓库 `wingetui`，`main` 为集成分支（见 [ADR-0003](adr/0003-public-repo.md)） |
-| winget 版本 | 本机 v1.29.280，需兼容 `--output json` 输出格式 |
+| winget 版本 | 本机 v1.29.280，查询类子命令不支持 `--output json`，解析**文本表格**输出（GBK/UTF-8 双编码，见 [bugfix-query-output](../specs/bugfix-query-output.md)） |
 | 文档治理 | AGENTS.md 只放基本原则，细则放 `.rules/`；所有 Markdown 须过 `scripts/check-links.py` |
 
 ## 5. 质量要求
@@ -68,7 +68,9 @@
 | `ratatui` | TUI 框架 | 已定 0.29（workspace 根） |
 | `crossterm` | 终端事件 | 已定 0.28（workspace 根） |
 | `tokio` | 异步运行时 | 已定 1.x，特性 rt-multi-thread/process/sync/macros/time/io-util |
-| `serde` / `serde_json` | winget JSON 解析（crates/winget） | 已定 1.x |
+| `serde` | `Package` 模型派生（crates/winget） | 已定 1.x（`serde_json` 已移除，查询改文本表格解析） |
+| `encoding_rs` | GBK 解码回退（crates/winget，winget 中文环境输出 GBK） | 已定 0.8 |
+| `unicode-width` | 文本表格按显示宽度切分列（CJK 占 2 列） | 已定 0.2 |
 | `thiserror` | 错误类型派生（crates/winget） | 已定 2.x |
 | `anyhow` | 错误处理（workspace 保留声明，暂未直接引用） | 预留 |
 | `tempfile` | 测试临时目录（dev） | 已定 3.x |

@@ -5,3 +5,6 @@
 
 # 测试辅助二进制构建产物
 /tests/mock-winget/target
+
+# 本机探测临时目录（含真实 winget 输出，禁止提交公开仓库）
+/.tmp_verify
