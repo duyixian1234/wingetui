@@ -48,7 +48,7 @@ jobs:
       - name: Install cargo-deny & typos
         uses: taiki-e/install-action@a8398547d26d98747efeeeb0ace10a797e8ded5c # v1.9.0
         with:
-          tool: cargo-deny,typos
+          tool: cargo-deny,typos-cli
 
       - name: cargo deny check
         run: cargo deny check
