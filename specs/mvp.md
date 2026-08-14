@@ -104,13 +104,15 @@ pub fn validate_package_input(s: &str) -> Result<(), WingetError>;
 
 | 类别 | 命令 | 附加参数 |
 |------|------|----------|
-| 查询 | `winget search --query <q>` | `--output json --disable-interactivity --accept-source-agreements` |
-| 查询 | `winget upgrade`（列可升级） | `--output json --disable-interactivity --accept-source-agreements` |
-| 查询 | `winget list`（列已安装） | `--output json --disable-interactivity --accept-source-agreements` |
+| 查询 | `winget search --query <q>` | `--disable-interactivity --accept-source-agreements` |
+| 查询 | `winget upgrade`（列可升级） | `--disable-interactivity --accept-source-agreements` |
+| 查询 | `winget list`（列已安装） | `--disable-interactivity --accept-source-agreements` |
 | 变更 | `winget upgrade --id <id>` | `--silent --accept-package-agreements --accept-source-agreements --disable-interactivity` |
 | 变更 | `winget upgrade --all` | 同上 |
 | 变更 | `winget install --id <id>` | 同上 |
 | 变更 | `winget uninstall --id <id>` | 同上 |
+
+> **修正（2026-08-14）**：查询类命令已去掉 `--output json` —— 本机 winget v1.29.280 的 `search/list/upgrade` 均不支持该参数（退出码 `-1978335230`），解析改为文本表格 + GBK/UTF-8 解码，见 [bugfix-query-output.md](bugfix-query-output.md)。
 
 - 参数一律经 `Command::arg()` 数组传入，**禁止 shell 拼接**（[安全规范](../.rules/security.md)）。
 - 超时：查询类 30s，变更类 10min（可配置常量）。
@@ -155,7 +157,7 @@ pub enum BackgroundEvent {
 
 | 风险 | 说明 | 缓解 |
 |------|------|------|
-| winget JSON 格式随版本演进 | 本机 v1.29.280 的 `--output json` 字段可能变化 | 解析层字段缺失降级；fixture 覆盖正常/畸形/缺失；CI 用 mock winget 不依赖真实 winget |
+| winget JSON 格式随版本演进 | 本机 v1.29.280 的 `--output json` 字段可能变化（实测查询类子命令不支持该参数，见 [bugfix-query-output.md](bugfix-query-output.md)） | 解析层字段缺失降级；fixture 覆盖正常/畸形/缺失；CI 用 mock winget 不依赖真实 winget |
 | 首次运行 winget 源协议弹窗 | 查询/变更可能触发 source agreement 交互 | 查询类追加 `--accept-source-agreements --disable-interactivity` |
 | CI 无法访问真实 winget 行为 | runner 上有 winget 但行为不可控 | 单测/集成全走 mock winget 二进制；CI 不调用真实 winget |
 | TUI 渲染与状态机解耦不足 | 状态机测试困难 | 状态机纯逻辑无渲染依赖，事件驱动可单测 |
