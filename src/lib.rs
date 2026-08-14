@@ -1,6 +1,15 @@
-//! wingetui 库入口（占位）。
+//! wingetui 库入口。
 //!
-//! TUI 主循环 / 状态机将在后续块实现，这里先提供占位测试验证 workspace 可用。
+//! TUI 主循环 / 状态机在此组织：
+//! - [`app`]：`App` 状态机 + 主循环
+//! - [`event`]：crossterm 事件循环
+//! - [`state`]：`AppState` 状态模型 + 后台事件
+//! - [`ui`]：ratatui 渲染
+
+pub mod app;
+pub mod event;
+pub mod state;
+pub mod ui;
 
 /// 占位函数：返回固定问候语，供脚手架冒烟测试。
 pub fn placeholder_greeting() -> &'static str {

@@ -1,4 +1,7 @@
 /target
 
+# 本地临时日志
+*.log
+
 # 测试辅助二进制构建产物
 /tests/mock-winget/target
